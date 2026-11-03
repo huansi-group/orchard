@@ -40,7 +40,7 @@ flowchart LR
     API[开放 API / IM]
   end
 
-  subgraph 应用层["应用层（Spring Boot 模块化单体）"]
+  subgraph 应用层[应用层 Spring Boot 模块化单体]
     AUTH[认证与权限]
     AGENT[智能体与会话]
     META[元数据与标注]
