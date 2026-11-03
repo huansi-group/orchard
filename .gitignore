@@ -1,0 +1,32 @@
+# Dependencies
+node_modules/
+frontend/node_modules/
+.pnpm-store/
+
+# Build output
+frontend/dist/
+backend/target/
+*.jar
+*.war
+
+# Runtime data
+*.log
+logs/
+data/
+
+# Environment overrides
+.env.local
+.env.*.local
+backend/src/main/resources/application-local.yml
+
+# IDE / OS
+.idea/
+.vscode/
+*.iml
+.DS_Store
+Thumbs.db
+
+# Test / coverage
+coverage/
+frontend/coverage/
+backend/target/surefire-reports/
