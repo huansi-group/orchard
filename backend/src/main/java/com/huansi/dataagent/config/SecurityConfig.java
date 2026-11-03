@@ -63,6 +63,7 @@ public class SecurityConfig {
                 .authorizeHttpRequests(authorize -> authorize
                         .requestMatchers("/api/auth/login", "/api/auth/register").permitAll()
                         .requestMatchers("/h2-console/**", "/error").permitAll()
+                        .requestMatchers(HttpMethod.POST, "/api/agents/*/chat").authenticated()
                         .requestMatchers(HttpMethod.POST, "/api/agents/**").hasRole("ADMIN")
                         .requestMatchers(HttpMethod.PUT, "/api/agents/**").hasRole("ADMIN")
                         .requestMatchers(HttpMethod.DELETE, "/api/agents/**").hasRole("ADMIN")
