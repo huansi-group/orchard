@@ -907,7 +907,7 @@ flowchart LR
 | 对象 | 关键字段 | 说明 |
 | --- | --- | --- |
 | ScheduledTask | id、tenant_id、name、description、owner_id、agent_id、source_session_id、source_message_id、query_mode、question、query_spec、sql_snapshot、params_json、cron、timezone、start_at、end_at、status、misfire_policy、catch_up_minutes、timeout_seconds、max_retries、consecutive_failures、next_run_at、last_run_at、last_run_status、version | 任务定义与调度状态 |
-| ScheduledTaskRun | id、task_id、scheduled_at、trigger_type、status、attempt、sql_text、query_spec、result_preview、result_ref、chart_json、row_count、data_freshness_at、duration_ms、error_code、error_message、trace_id、audit_id | 每次执行快照，追加写 |
+| ScheduledTaskRun | id、task_id、scheduled_at、trigger_type、status、attempt、sql_text、query_spec、metric_version、result_preview、result_ref、chart_json、row_count、data_freshness_at、duration_ms、error_code、error_message、trace_id、audit_id | 每次执行快照，追加写 |
 | Notification | id、user_id、type、title、content、link、ref_type、ref_id、channel、status、read_at | 站内通知；渠道后续扩展 |
 
 任务状态：

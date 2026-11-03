@@ -641,6 +641,7 @@ CREATE TABLE scheduled_task_run (
   attempt INT NOT NULL DEFAULT 1,
   sql_text MEDIUMTEXT NULL,
   query_spec JSON NULL,
+  metric_version VARCHAR(64) NULL,
   result_preview JSON NULL,
   result_ref VARCHAR(500) NULL,
   chart_json JSON NULL,
@@ -982,7 +983,7 @@ catch:
 - `result_ref`：大结果 CSV 对象存储路径；保留 90 天（可配）。
 - `chart_json`：图表配置；不保存图片。
 - `data_freshness_at`：数据集最近同步时间。
-- `sql_text`：实际执行 SQL；指标版本记录在 `query_spec.metricVersion`。
+- `sql_text`：实际执行 SQL；指标版本写入 `metric_version`。
 
 ### 8.4 通知
 
