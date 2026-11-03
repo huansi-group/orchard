@@ -56,7 +56,7 @@
 | 部署形态 | 单租户私有化 | 数据边界清晰；SaaS 留到三期 |
 | 试点场景 | 销售/订单分析 | 数据相对完整、问题高频 |
 | 数据源 | MySQL + PostgreSQL + CSV/XLSX | 覆盖多数中小企业 |
-| 模型 | 现有 DashScope `qwen-plus`，经模型网关 | 可切换私有模型；不绑定单一厂商 |
+| 模型 | 现有 DashScope `qwen-plus`，经模型网关 | 可切换私有模型；涉及 L3/L4 或强合规客户时默认私有化部署，仅发送脱敏后的上下文 |
 | 身份 | 本地账号 + JWT | SSO 三期 |
 | 首期角色 | Admin / Data Admin / Analyst / Viewer | Auditor 可在二期加入 |
 
