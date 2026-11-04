@@ -1,6 +1,6 @@
 # 03 功能设计：轻量 DataAgent 的模块、数据与流程
 
-> 文档版本：v1.1（2026-11-04）  
+> 文档版本：v1.2（2026-11-04）  
 > 上游文档：[02 需求分析](02-requirements-analysis.md)  
 > 下游文档：[04 分期实施方案](04-phased-delivery.md)  
 > 说明：本文是功能与技术设计，不包含代码改动；示例 SQL/JSON 仅用于说明契约。
@@ -25,7 +25,7 @@
 | D4 | 元数据/语义/血缘与业务库分离 | 不侵入业务系统；支持跨源 | 需要同步与新鲜度管理 |
 | D5 | 默认虚拟查询，按需物化 | 避免强制建仓；首期成本低 | 大表/复杂 Join 慢；用物化数据集与缓存解决 |
 | D6 | 审计“失败即拒绝” | 不能出现查了但没记录 | 审计库需高可用；用本地落盘缓冲兜底 |
-| D7 | 行列权限在网关改写，不依赖数据库 RLS | 跨 MySQL/PostgreSQL 一致；策略可运营 | SQL 解析要覆盖方言；复杂 SQL 需限制 |
+| D7 | 行列权限在网关改写，不依赖数据库 RLS | 跨 PostgreSQL/MySQL/SQL Server 一致；策略可运营 | SQL 解析要覆盖方言；复杂 SQL 需限制 |
 | D8 | 单智能体 + 工具，不做多智能体自治 | 可控、便宜、易调试 | 复杂任务分步引导；后续再引入规划器 |
 
 ## 2. 总体架构
@@ -75,7 +75,7 @@ flowchart LR
     OBJ[(对象存储)]
     SCHED[调度器]
     LLM[大模型 API / 私有模型]
-    SRC[(MySQL / PostgreSQL / 文件)]
+    SRC[(PostgreSQL / MySQL / SQL Server / 文件)]
   end
 
   WEB --> AUTH
@@ -137,7 +137,7 @@ flowchart TB
     APP2[应用实例 2（可选）]
   end
   subgraph 数据
-    DB[(MySQL/PostgreSQL 元数据库)]
+    DB[(PostgreSQL 元数据库)]
     REDIS[(Redis 可选)]
     OBJ[(对象存储可选)]
   end
@@ -171,7 +171,7 @@ flowchart TB
 | 模块 | 职责 | 首期 | 关键依赖 |
 | --- | --- | --- | --- |
 | 认证与权限 | 登录、JWT、角色、资源授权、行/列策略 | ✅ | 用户、审计 |
-| 数据接入 | 数据源、连接、Schema 导入、同步 | ✅ | 元数据、ETL |
+| 数据接入 | 数据源（PostgreSQL/MySQL/SQL Server/文件）、连接、Schema 导入、同步 | ✅ | 元数据、ETL |
 | 轻量 ETL | SQL 转换、物化、调度、质量 | 二期 | 数据接入、血缘 |
 | 元数据与标注 | 技术/业务元数据、标注、术语、检索 | ✅ | 数据接入 |
 | 语义与指标 | 语义模型、维度、度量、指标、编译、验证查询 | ✅ | 元数据 |
@@ -210,7 +210,7 @@ flowchart TB
 | --- | --- | --- |
 | 计算 | 不建湖仓；虚拟查询 + 按需物化到元数据库同实例 | 单表 > 5000 万行或复杂 Join 频繁超时 |
 | 调度 | Spring Scheduler + 数据库租约；问数任务与 ETL 分队列，单机起步 | 多机、跨系统依赖、SLA 要求高时引入 Quartz 集群/专业调度 |
-| 存储 | 一个 MySQL/PostgreSQL；可选 Redis | 会话/限流压力大时加 Redis |
+| 存储 | 一个 PostgreSQL 15+ 元数据库；可选 Redis | 会话/限流压力大时加 Redis |
 | 消息 | 领域事件 + 本地事务表；不引入 Kafka | 多实例、异步任务量大时 |
 | 搜索 | 数据库全文索引 + 关键词 + 同义词匹配 | 资产 > 1 万、语义检索效果不足时引入向量库 |
 | 部署 | 2–3 个容器：web、app、db | 高可用时 app 多实例 + 负载均衡 |
@@ -223,7 +223,7 @@ flowchart TB
 
 #### 4.1.1 对象与状态
 
-- **数据源（Datasource）**：一个数据库连接或文件集合。
+- **数据源（Datasource）**：一个 PostgreSQL/MySQL/SQL Server 连接或文件集合；元数据库固定 PostgreSQL。
 - **数据集（Dataset）**：面向业务分析的一组表/视图，可来自一个数据源，也可跨源物化。
 - **表（TableMeta）/字段（ColumnMeta）**：从数据源导入的技术元数据。
 
@@ -263,19 +263,20 @@ flowchart TD
 #### 4.1.3 关键规则
 
 1. **只读优先**：连接测试时执行 `SELECT 1`，并检查账号是否具备写权限；检测到写权限时给出高风险警告，默认拒绝保存。管理员确需使用受限写账号时，必须在系统设置中显式开启并二次确认，网关仍强制只读、全量审计。
-2. **凭据安全**：使用 AES-256-GCM 加密，主密钥来自环境变量/KMS；日志、接口响应、错误信息均不返回密码；支持轮换。
-3. **Schema 探查**：
+2. **凭据安全**：使用 AES-256-GCM 加密，主密钥来自环境变量/KMS；日志、接口响应、错误信息均不返回密码；支持轮换。SQL Server 默认端口 1433、PostgreSQL 5432、MySQL 3306。
+3. **方言适配**：PostgreSQL 用 `information_schema`，MySQL 用 `information_schema`，SQL Server 用 `sys`/`INFORMATION_SCHEMA`；分页/日期/标识符由 `Dialect` 适配。
+4. **Schema 探查**：
    - 读取 `information_schema` 或 JDBC metadata；
    - 获取表/字段、类型、主外键、注释、索引、行数（估算）；
    - 样例数据每表最多 100 行，L3/L4 字段默认脱敏；
    - 生成 `table_meta`、`column_meta`，与上次快照 diff。
-4. **同步模式**：
+5. **同步模式**：
    - 全量：分批读取（默认 5,000 行/批），写入 staging 表后原子切换；
    - 增量：时间戳/自增 ID 水位，幂等 upsert；
    - 手动/定时：Cron 最小 5 分钟；
    - 失败重试 3 次，指数退避；记录 `sync_run`。
-5. **多源与跨源**：首期一个数据集只绑定一个数据源；跨源分析通过物化数据集在二期实现。
-6. **文件数据源**：CSV/XLSX 上传后解析表头、推断类型、预览、确认后入库；单文件默认 ≤ 100MB、≤ 50 万行。
+6. **多源与跨源**：首期一个数据集只绑定一个数据源；跨源分析通过物化数据集在二期实现。
+7. **文件数据源**：CSV/XLSX 上传后解析表头、推断类型、预览、确认后入库；单文件默认 ≤ 100MB、≤ 50 万行。
 
 #### 4.1.4 页面
 
@@ -459,6 +460,7 @@ sequenceDiagram
 
 编译规则：
 
+- 目标方言：PostgreSQL、MySQL、SQL Server；分页/标识符/日期函数由 `Dialect` 适配。
 - 只允许已定义的指标/维度/过滤器；未知字段直接拒绝并给出候选。
 - 时间范围统一转换为半开区间 `[start, end)`；周一开始；时区默认 `Asia/Shanghai`。
 - Join 必须来自语义模型定义；多对多关系需显式声明，否则拒绝自动 Join。
@@ -599,7 +601,7 @@ sequenceDiagram
 
 1. **语法解析**：仅允许单条 `SELECT`/`WITH`；拒绝多语句、用注释切分/隐藏语句、`INTO OUTFILE`。
 2. **语句类型**：拒绝 `INSERT/UPDATE/DELETE/DROP/ALTER/TRUNCATE/CREATE/GRANT/CALL` 等。
-3. **对象解析**：解析所有表/字段；必须属于当前数据集且在用户授权范围内。
+3. **对象解析**：按源方言解析所有表/字段；必须属于当前数据集且在用户授权范围内。
 4. **列权限**：`HIDDEN` 列出现即拒绝；`MASKED` 列按策略处理。
 5. **行权限**：按用户属性注入 `tenant_id/region/dept_id` 等谓词；与已有条件 `AND`。
 6. **危险模式**：拒绝系统库、`information_schema`（白名单除外）、跨库查询、笛卡尔积（无 Join 条件且多表）、`SLEEP/BENCHMARK`、文件函数。
@@ -1352,9 +1354,9 @@ data: {"code":"PERMISSION_DENIED","message":"无该数据集权限","requestId":
 ```json
 {
   "name": "生产订单库",
-  "type": "MYSQL",
+  "type": "POSTGRESQL",
   "host": "10.0.0.12",
-  "port": 3306,
+  "port": 5432,
   "database": "sales",
   "username": "readonly",
   "password": "******",
@@ -1460,7 +1462,7 @@ data: {"code":"PERMISSION_DENIED","message":"无该数据集权限","requestId":
 
 ## 11. 与现有代码基线的映射
 
-现有项目是 Spring Boot 3.5 + Java 17 + Spring Security/JWT + JPA/H2 + Vue 3/Element Plus + AgentScope Harness。设计**复用现有骨架，增量扩展**。
+现有项目是 Spring Boot 3.5 + Java 17 + Spring Security/JWT + JPA/H2 + Vue 3/Element Plus + AgentScope Harness。按本次要求，目标实现切换为 **PostgreSQL 15+ + MyBatis-Plus + Flyway**；现有认证/智能体/前端骨架复用，数据访问层替换。
 
 | 现有能力 | 现状 | 设计中的处理 |
 | --- | --- | --- |
@@ -1474,7 +1476,9 @@ data: {"code":"PERMISSION_DENIED","message":"无该数据集权限","requestId":
 | 审计 | 无 | 新增 SQL/操作审计、风险规则 |
 | 调度 | 无 | 新增定时任务调度器；与 ETL 共用基础设施但分队列/线程池 |
 | 前端 | 登录、概览、智能体管理 | 保留；新增问答、数据接入、元数据、语义、血缘、审计、权限、评测页面 |
-| 数据库 | H2 内存、`ddl-auto=update` | 开发保留 H2；生产切 MySQL/PostgreSQL；引入迁移脚本 |
+| 数据库 | H2 内存、`ddl-auto=update` | 统一 PostgreSQL 15+（开发/测试/生产）；移除 `ddl-auto`，用 Flyway |
+| 数据访问 | JPA/Hibernate Repository | 替换为 MyBatis-Plus Mapper/Service；复杂 SQL 用 XML |
+| 迁移 | 无 | Flyway `V{n}__{desc}.sql`；Testcontainers PostgreSQL 验证 |
 | 测试 | 认证/智能体/Harness 测试 | 保留；新增网关、权限、审计、语义编译、会话集成测试 |
 
 **兼容策略**：
@@ -1493,6 +1497,7 @@ data: {"code":"PERMISSION_DENIED","message":"无该数据集权限","requestId":
 | 查询 | 语义编译优先 | 纯 NL2SQL | 口径可控、可解释、可回归；探索模式保留灵活性 |
 | 存储 | 虚拟查询 + 按需物化 | 强制建仓 | 降低首期成本与实施周期 |
 | 权限 | 网关改写 | 数据库 RLS | 跨源一致、策略可运营；复杂 SQL 需限制 |
+| ORM | MyBatis-Plus | JPA/Hibernate | SQL 可控、分页/逻辑删除/乐观锁开箱；复杂 SQL 用 XML |
 | 审计 | 同步前置、失败拒绝 | 异步事后记录 | 避免“查了没记”；用本地缓冲保障可用性 |
 | 搜索 | 关键词 + 同义词 | 首期上向量库 | 降低依赖；资产规模大后再引入 |
 | 多租户 | 单租户 + 预留字段 | 首期 SaaS | 降低隔离复杂度；保留演进空间 |
