@@ -1,6 +1,6 @@
 # 01 行业全景：DataAgent 主流功能与中小企业取舍
 
-> 文档版本：v1.1（2026-11-04）  
+> 文档版本：v1.2（2026-11-04）  
 > 适用对象：产品、研发、数据管理与业务负责人  
 > 说明：本文基于公开产品资料与行业实践整理，重点回答“业内主流 DataAgent 到底包含哪些能力、哪些适合中小企业、哪些应当后置”。
 
@@ -34,7 +34,7 @@
 
 | 能力 | 说明 | 中小企业优先级 |
 | --- | --- | --- |
-| 多源连接 | MySQL、PostgreSQL、SQL Server、Oracle、ClickHouse、Doris、Excel/CSV、API | P0：MySQL/PostgreSQL/Excel；其余 P2 |
+| 多源连接 | PostgreSQL、MySQL、SQL Server、Oracle、ClickHouse、Doris、Excel/CSV、API | P0：PostgreSQL/MySQL/SQL Server/Excel；其余 P2 |
 | 连接管理 | 连接测试、只读账号、SSL、超时、连接池、凭据加密 | P0 |
 | Schema 探查 | 自动读取库表、字段、类型、主外键、注释、行数、样例数据 | P0 |
 | 数据同步 | 全量/增量同步、字段映射、过滤、去重、类型转换 | P0：手动全量；P1：定时/增量 |
