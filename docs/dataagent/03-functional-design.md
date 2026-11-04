@@ -1,6 +1,6 @@
 # 03 功能设计：轻量 DataAgent 的模块、数据与流程
 
-> 文档版本：v1.0（2026-11-04）  
+> 文档版本：v1.1（2026-11-04）  
 > 上游文档：[02 需求分析](02-requirements-analysis.md)  
 > 下游文档：[04 分期实施方案](04-phased-delivery.md)  
 > 说明：本文是功能与技术设计，不包含代码改动；示例 SQL/JSON 仅用于说明契约。
@@ -50,6 +50,7 @@ flowchart LR
     AUD[审计与风控]
     EVAL[反馈与评测]
     OPS[运营与配置]
+    SCHED[定时任务]
   end
 
   subgraph 运行时
@@ -90,6 +91,9 @@ flowchart LR
   TOOLS --> SEM
   TOOLS --> LIN
   TOOLS --> QG
+  SCHED --> AGENT
+  SCHED --> QG
+  SCHED --> META_DB
   AGENT --> META_DB
   META --> META_DB
   SEM --> META_DB
@@ -173,12 +177,13 @@ flowchart TB
 | 语义与指标 | 语义模型、维度、度量、指标、编译、验证查询 | ✅ | 元数据 |
 | 血缘 | 表/字段血缘、图谱、影响分析 | 二期 | ETL、元数据 |
 | 智能体与会话 | 会话、意图、规划、工具、答案 | ✅ | 语义、查询网关 |
+| 定时任务 | 问数任务保存、Cron 调度、执行、结果快照、通知 | ✅（一期仅站内） | 会话、查询网关、权限、审计 |
 | 查询网关 | 解析、校验、权限改写、执行、脱敏、缓存 | ✅ | 权限、审计 |
 | 审计与风控 | SQL/操作审计、风险规则、告警 | ✅ | 查询网关 |
 | 反馈与评测 | 反馈、坏例、评测集、回归 | 首期反馈 / 二期评测 | 会话、语义 |
 | 运营与配置 | 看板、告警、模型、配额、系统配置 | 二期 | 全部 |
 
-> 其中“认证与权限”“运营与配置”是支撑模块；核心功能模块为 9 个：数据接入、轻量 ETL、元数据与标注、语义与指标、数据血缘、智能体与会话、查询网关、审计与风控、反馈与评测。
+> 其中“认证与权限”“运营与配置”是支撑模块；核心功能模块为 10 个：数据接入、轻量 ETL、元数据与标注、语义与指标、数据血缘、智能体与会话、查询网关、审计与风控、反馈与评测、定时任务。
 
 ### 2.4 功能自闭环矩阵
 
@@ -193,6 +198,7 @@ flowchart TB
 | 数据血缘 | ETL/SQL、配置、查询日志 | 解析、建图、影响分析 | 血缘图、影响清单 | 驱动 Schema 变更修复与回归评测 |
 | 智能体与会话 | 问题、上下文、权限 | 意图、澄清、规划、工具调用 | 答案、图表、SQL、引用 | 反馈进入坏例；会话沉淀为已验证查询 |
 | 查询网关 | SQL/结构化查询 | 校验、权限改写、执行、脱敏 | 结果集、审计记录 | 审计进入风控；失败进入错误分析 |
+| 定时任务 | 保存的问题/查询语义/Cron | 调度、权限重校验、执行、快照 | 运行结果、通知、审计 | 失败告警/连续失败暂停；结果可推送（后续） |
 | 权限与审计 | 身份、资源、策略 | 授权、改写、审计、风险识别 | 允许/拒绝、审计事件 | 风险驱动策略优化；审批到期回收 |
 | 反馈与评测 | 点赞/点踩、评测集 | 归因、修复、回归 | 坏例状态、评测报告 | 发布门禁；修复进入元数据/语义/提示 |
 
@@ -203,7 +209,7 @@ flowchart TB
 | 维度 | 轻量做法 | 何时升级 |
 | --- | --- | --- |
 | 计算 | 不建湖仓；虚拟查询 + 按需物化到元数据库同实例 | 单表 > 5000 万行或复杂 Join 频繁超时 |
-| 调度 | Spring Scheduler/Quartz 单机；线性依赖 | 多机、跨系统依赖、SLA 要求高时引入专业调度 |
+| 调度 | Spring Scheduler + 数据库租约；问数任务与 ETL 分队列，单机起步 | 多机、跨系统依赖、SLA 要求高时引入 Quartz 集群/专业调度 |
 | 存储 | 一个 MySQL/PostgreSQL；可选 Redis | 会话/限流压力大时加 Redis |
 | 消息 | 领域事件 + 本地事务表；不引入 Kafka | 多实例、异步任务量大时 |
 | 搜索 | 数据库全文索引 + 关键词 + 同义词匹配 | 资产 > 1 万、语义检索效果不足时引入向量库 |
@@ -666,6 +672,7 @@ SQL：<可展开，带语法高亮与复制>
 | audit_id / trace_id | 唯一标识，贯穿问答与 SQL |
 | tenant_id / user_id | 租户与用户 |
 | session_id / message_id / agent_id | 会话上下文 |
+| trigger_source / scheduled_task_id / scheduled_task_run_id | 触发来源（CHAT / SCHEDULED_TASK / API）与定时任务上下文 |
 | datasource_id / dataset_id | 数据来源 |
 | sql_text / sql_hash / normalized_sql | 原始、哈希、归一化 SQL |
 | params_json | 参数（脱敏） |
@@ -728,6 +735,7 @@ Condition= 行级策略 / 列级策略 / 时间范围 / IP / 租户
 | 数据源/数据集管理 | ✅ | ✅ | — | — | — |
 | 元数据/语义/血缘编辑 | ✅ | ✅ | — | — | — |
 | 智能体管理 | ✅ | ✅ | — | — | — |
+| 创建/管理定时任务 | ✅ | ✅ | ✅ | — | — |
 | 使用智能体问数 | ✅ | ✅ | ✅ | ✅ | — |
 | 探索模式 | ✅ | ✅ | ✅ | — | — |
 | 导出 | ✅ | ✅ | ✅ | 按授权 | — |
@@ -883,12 +891,160 @@ flowchart LR
 - 运营：使用趋势、Top 问题、失败原因、数据源健康、高风险 SQL、成本；支持导出周报。
 
 
-### 4.10 前端信息架构
+### 4.10 定时任务（SCHED）
+
+> 一期新增能力：把一次问数保存为定时任务，按 Cron 以任务所有者身份重新执行，保存结果并站内通知；多平台推送在二期/三期扩展。详细 DDL 与实现级设计见 [05 Phase 1 详细设计](05-detailed-design-phase1.md)。
+
+#### 4.10.1 目标与边界
+
+- **一期做**：从会话/自由问题创建任务、Cron 调度、手动试跑、暂停/恢复、结果快照、运行历史、站内通知、全量审计、权限重校验。
+- **一期不做**：多接收人广播、邮件/Webhook/IM/第三方平台推送；这些在二期/三期通过 `channel` 与投递适配器扩展。
+- **执行确定性**：任务保存“查询语义（结构化查询）或 SQL 快照”，运行时只做时间参数解析与重新编译，不在运行时让模型自由重写 SQL，避免口径漂移与不可控成本。
+- **与 ETL 调度的关系**：共用调度基础设施，但使用独立任务表、队列与线程池；问数任务不阻塞 ETL，ETL 不占用问数配额。
+
+#### 4.10.2 任务模型
+
+| 对象 | 关键字段 | 说明 |
+| --- | --- | --- |
+| ScheduledTask | id、tenant_id、name、description、owner_id、agent_id、source_session_id、source_message_id、query_mode、question、query_spec、sql_snapshot、params_json、cron、timezone、start_at、end_at、status、misfire_policy、catch_up_minutes、timeout_seconds、max_retries、consecutive_failures、next_run_at、last_run_at、last_run_status、version | 任务定义与调度状态 |
+| ScheduledTaskRun | id、task_id、scheduled_at、trigger_type、status、attempt、sql_text、query_spec、metric_version、result_preview、result_ref、chart_json、row_count、data_freshness_at、duration_ms、error_code、error_message、trace_id、audit_id | 每次执行快照，追加写 |
+| Notification | id、user_id、type、title、content、link、ref_type、ref_id、channel、status、read_at | 站内通知；渠道后续扩展 |
+
+任务状态：
+
+```mermaid
+stateDiagram-v2
+  [*] --> DRAFT
+  DRAFT --> ACTIVE: 保存并启用
+  ACTIVE --> PAUSED: 手动暂停/失权/连续失败
+  PAUSED --> ACTIVE: 恢复
+  ACTIVE --> ERROR: 调度异常
+  ERROR --> PAUSED: 自动转暂停
+  ACTIVE --> ARCHIVED: 删除/归档
+  PAUSED --> ARCHIVED: 删除/归档
+```
+
+运行状态：`QUEUED → RUNNING → SUCCESS / FAILED / SKIPPED / CANCELED`。`SKIPPED` 用于错过补跑窗口、上一轮未结束或权限失效。
+
+#### 4.10.3 调度引擎
+
+- **调度方式**：数据库轮询 + 租约，不依赖单机内存 Cron。调度线程每 5 秒扫描 `status=ACTIVE AND next_run_at <= now()` 的任务。
+- **抢占**：`SELECT ... WHERE ... FOR UPDATE SKIP LOCKED` 抢占，更新 `locked_by/locked_until`；单实例也按多实例安全设计。
+- **计算下次时间**：按任务 `timezone` 用 `CronExpression.next` 计算；保存 UTC 时间，界面按任务时区展示。
+- **幂等**：首次调度以 `task_id + scheduled_at + attempt` 唯一（attempt=1），重复调度插入冲突即忽略；重试显式 attempt+1。
+- **错过补跑**：应用重启/停机后，`next_run_at` 已过且在 `catch_up_minutes`（默认 60）内补跑一次；更早的计划记为 `SKIPPED`，不无限补跑。
+- **并发**：同一任务默认不允许并行，上一轮 `RUNNING` 时本轮 `SKIPPED`；问数任务线程池默认 2、队列 100。
+- **手动执行**：`trigger_type=MANUAL`，不改变 `next_run_at`；用于创建后的“立即试跑”。
+- **结束时间**：当前时间超过 `end_at` 后任务自动转 `ARCHIVED`，不再调度。
+
+#### 4.10.4 执行流程
+
+```mermaid
+sequenceDiagram
+  participant S as 调度器
+  participant T as 任务服务
+  participant P as 权限服务
+  participant C as 语义编译
+  participant Q as SQL 网关
+  participant D as 数据源
+  participant N as 通知
+  S->>T: 抢占到期任务
+  T->>T: 创建 QUEUED 运行记录（run_key 幂等）
+  T->>P: 校验所有者/数据集/智能体权限
+  alt 权限失效
+    P-->>T: 拒绝
+    T->>T: 任务 PAUSED，运行 SKIPPED
+    T->>N: 通知所有者
+  else 权限通过
+    T->>C: 解析相对时间 + 编译 query_spec
+    C-->>T: SQL（或使用 SQL 快照）
+    T->>Q: 执行（actor=owner, source=SCHEDULED_TASK）
+    Q->>D: 只读查询
+    D-->>Q: 结果
+    Q-->>T: 结果 + 审计 ID
+    T->>T: 保存结果快照/图表/口径/新鲜度
+    T->>N: 成功/失败通知
+  end
+```
+
+执行规则：
+
+1. **相对时间**：`TODAY`、`YESTERDAY`、`LAST_7_DAYS`、`MTD`、`LAST_MONTH`、`YTD` 等在任务时区解析；执行前展示“本次时间范围”。
+2. **语义任务**：保存 `query_spec`，运行时不调用大模型；语义编译器按当前指标版本生成 SQL。指标口径变更时，任务详情提示“口径已更新”，下次运行使用新版本并记录版本。
+3. **探索任务**：保存 `sql_snapshot` 与参数白名单，运行前做同样的 SQL 网关校验；不允许运行时自由生成 SQL。
+4. **结果快照**：默认保存前 1,000 行/1MB 到 `result_preview`；更大结果写对象存储并保存 `result_ref`；同时保存 SQL、图表配置、指标版本、数据新鲜度。
+5. **审计**：`sql_audit_log` 记录 `scheduled_task_id`、`scheduled_task_run_id`、`trigger_source`（CHAT/SCHEDULED_TASK/API），执行人记为任务所有者。
+6. **通知**：成功/失败都写 `notification`；连续失败额外告警管理员。
+
+#### 4.10.5 权限规则
+
+- 创建任务要求：可使用该智能体、可读任务涉及的数据集/指标、未超任务配额。
+- 运行身份：任务所有者；不是“系统超级权限”。所有 SQL 仍走用户权限与租户隔离。
+- 每次运行重新校验；所有者被停用、角色被回收、数据集授权过期时，任务转 `PAUSED`，不执行查询。
+- 结果可见性：一期仅所有者可见；管理员可看任务元数据与运行状态，但查看结果仍需数据权限。
+- 二期接收人：按接收人权限过滤结果；无权限的字段隐藏、无权限的数据集不投递，并记录投递审计。
+- 任务转移：仅管理员可操作；转移后 `owner_id` 变更，下一次运行按新所有者权限执行，历史结果保留原所有者快照。
+
+#### 4.10.6 失败与补偿
+
+| 场景 | 处理 |
+| --- | --- |
+| 单次超时（默认 60s） | 取消查询，运行 `FAILED`，按退避重试 |
+| SQL/语义编译失败 | 不重试（配置错误），运行 `FAILED`，通知所有者修正 |
+| 数据源不可用 | 重试 3 次（1/5/15 分钟），仍失败则 `FAILED` |
+| 连续 3 次失败 | 任务 `PAUSED`，通知所有者与管理员 |
+| 上一轮未结束 | 本轮 `SKIPPED`，不并发 |
+| 应用重启 | 恢复未完成任务；错过窗口按 `catch_up_minutes` 补跑 |
+| 权限失效 | `PAUSED` + `SKIPPED`，不执行 |
+| 结果过大 | 截断预览 + 对象存储，运行成功但标记 `truncated=true` |
+
+#### 4.10.7 页面与交互
+
+- **任务列表**：名称、所有者、智能体、频率、下次执行、最近状态、连续失败、操作（试跑/暂停/恢复/复制/删除）。
+- **创建向导**：选择来源（会话/自由问题）→ 确认查询语义与时间口径 → 设置频率/时区/启停时间 → 预览未来 5 次 → 试跑 → 保存启用。
+- **Cron 辅助**：预设“每天 09:00 / 每周一 09:00 / 每月 1 日 09:00 / 自定义”；自定义显示人类可读描述与未来 5 次时间。
+- **详情页**：任务配置、查询语义、SQL、指标版本、运行历史、结果快照、通知记录、审计入口。
+- **运行历史**：状态、计划时间、开始/结束、耗时、行数、错误码、重试次数、trace_id；支持查看结果与 SQL。
+- **通知中心**：未读/已读、按任务筛选、跳转运行详情。
+- **移动端**：列表与运行详情只读；创建/编辑桌面优先。
+
+#### 4.10.8 接口
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| POST | `/scheduled-tasks` | 创建任务（可带 `sourceSessionId`/`sourceMessageId`） |
+| GET | `/scheduled-tasks` | 我的任务/管理员全部；按状态、所有者、智能体筛选 |
+| GET | `/scheduled-tasks/{id}` | 任务详情 + 下次执行 + 最近运行 |
+| PUT | `/scheduled-tasks/{id}` | 修改任务（版本+1，重新计算 next_run） |
+| DELETE | `/scheduled-tasks/{id}` | 归档；停止调度 |
+| POST | `/scheduled-tasks/{id}/run` | 立即试跑（不改变计划） |
+| POST | `/scheduled-tasks/{id}/pause` | 暂停 |
+| POST | `/scheduled-tasks/{id}/resume` | 恢复并重算下次时间 |
+| GET | `/scheduled-tasks/{id}/runs` | 运行历史（分页） |
+| GET | `/scheduled-task-runs/{runId}` | 运行详情（结果、SQL、审计） |
+| GET | `/notifications` | 站内通知列表 |
+| POST | `/notifications/{id}/read` | 标记已读 |
+
+#### 4.10.9 验收要点
+
+1. 从会话创建“每天 09:00”任务，未来 5 次时间正确；试跑不改变计划。
+2. 到点自动执行，审计中可查到 `scheduled_task_id`、`scheduled_task_run_id`。
+3. 同一计划时间重复调度只产生一条运行记录。
+4. 所有者被停用/失权后，下一次运行不执行，任务暂停并通知。
+5. 数据源故障触发重试；连续 3 次失败自动暂停。
+6. 应用重启后，错过窗口内的任务补跑一次，更早的记 `SKIPPED`。
+7. 结果快照包含 SQL、图表、口径、数据新鲜度；超过 1MB 走对象存储。
+8. 站内通知 1 分钟内到达；标记已读不影响任务。
+9. 删除任务后不再产生新运行；历史运行仍可审计。
+10. 定时任务线程池占满时，在线问答不受影响。
+
+### 4.11 前端信息架构
 
 | 一级菜单 | 页面 | 主要用户 |
 | --- | --- | --- |
 | 概览 | 运营首页、快捷入口 | 全部 |
 | 智能问答 | 会话页、历史、分享 | 业务/分析师 |
+| 定时任务 | 任务列表、编辑器、运行历史、通知 | 分析师/管理员 |
 | 数据接入 | 数据源、数据集、同步任务 | 数据管理员 |
 | 数据准备 | ETL 任务、质量规则、运行历史 | 数据管理员 |
 | 元数据 | 资产目录、标注工作台、术语表 | 数据管理员/分析师 |
@@ -918,6 +1074,11 @@ erDiagram
   SEMANTIC_MODEL ||--o{ METRIC : defines
   SEMANTIC_MODEL ||--o{ VERIFIED_QUERY : verified_by
   CHAT_SESSION ||--o{ CHAT_MESSAGE : contains
+  CHAT_MESSAGE ||--o{ SCHEDULED_TASK : saved_as
+  APP_USER ||--o{ SCHEDULED_TASK : owns
+  SCHEDULED_TASK ||--o{ SCHEDULED_TASK_RUN : runs
+  SCHEDULED_TASK_RUN ||--o{ SQL_AUDIT_LOG : audited_by
+  APP_USER ||--o{ NOTIFICATION : receives
   CHAT_MESSAGE ||--o{ SQL_AUDIT_LOG : triggers
   SQL_AUDIT_LOG ||--o{ AUDIT_EVENT : emits
   DATASET ||--o{ ETL_JOB : produces
@@ -933,9 +1094,9 @@ erDiagram
 
 | 分组 | 表 | 关键字段 | 期次 |
 | --- | --- | --- | --- |
-| 身份权限 | `app_user` | id, tenant_id, username, password_hash, display_name, status | 1 |
-| 身份权限 | `role` / `user_role` | code, name；user_id, role_id | 1 |
-| 身份权限 | `permission_grant` | subject, resource_type, resource_id, action, effect, expires_at | 1 |
+| 身份权限 | `app_user` | id, tenant_id, username, password_hash, display_name, role, enabled | 1 |
+| 身份权限 | `role` / `user_role` | code, name；user_id, role_id（自定义角色时启用） | 3 |
+| 身份权限 | `permission_grant` | subject_type, subject_key, resource_type, resource_id, action, effect, expires_at | 1 |
 | 身份权限 | `row_policy` | resource, column, operator, value_from, effect | 2 |
 | 身份权限 | `access_request` | requester, resource, reason, status, approver, expires_at | 2 |
 | 数据接入 | `datasource` | id, tenant_id, type, host, port, database, credential_cipher, status | 1 |
@@ -951,11 +1112,17 @@ erDiagram
 | 语义 | `semantic_model` | dataset_id, grain, default_time_field, version, status | 1 |
 | 语义 | `dimension` / `measure` | name, expression, type, hierarchy | 1 |
 | 语义 | `metric` | name, type, formula, unit, format, owner, version, status | 1 |
+| 语义 | `metric_version` | metric_id, version, formula, status, published_at | 1 |
 | 语义 | `verified_query` | question, params, sql, expected_columns, owner, status | 2 |
 | 血缘 | `lineage_node` / `lineage_edge` | type, ref_id；from, to, kind, confidence | 2 |
 | 会话 | `chat_session` | user_id, agent_id, title, status, context_summary | 1 |
 | 会话 | `chat_message` | role, content, sql, result_json, chart_json, trace_id, tokens | 1 |
 | 会话 | `chat_feedback` | message_id, rating, reason, corrected_sql, comment | 1 |
+| 定时任务 | `scheduled_task` | owner_id, agent_id, query_spec, cron, timezone, status, next_run_at | 1 |
+| 定时任务 | `scheduled_task_run` | task_id, scheduled_at, trigger_type, status, result_preview, audit_id | 1 |
+| 通知 | `notification` | user_id, type, title, ref_type, ref_id, channel, status | 1 |
+| 推送 | `scheduled_task_recipient` / `delivery_channel` / `delivery_record` | task_id, recipient, channel；config；status | 2 |
+| 租户 | `tenant` | code, name, plan, status | 3 |
 | 审计 | `sql_audit_log` | 见 4.7.1 | 1 |
 | 审计 | `audit_event` | event_type, actor, object, before/after, ip | 2 |
 | 评测 | `eval_set` / `eval_case` | name, domain；question, expected_sql, expected_result | 2 |
@@ -1061,6 +1228,31 @@ flowchart LR
   G --> H[下次发布门禁]
 ```
 
+### 6.5 定时任务执行
+
+```mermaid
+sequenceDiagram
+  participant DB as 元数据库
+  participant S as 调度器
+  participant T as 任务服务
+  participant P as 权限服务
+  participant Q as SQL 网关
+  participant N as 通知
+  S->>DB: 扫描到期任务
+  S->>T: 抢占任务（租约）
+  T->>DB: 创建运行记录（run_key 幂等）
+  T->>P: 以所有者身份校验权限
+  alt 权限通过
+    T->>Q: 编译并执行查询
+    Q-->>T: 结果 + 审计 ID
+    T->>DB: 保存结果快照/运行状态
+    T->>N: 成功通知
+  else 权限失效
+    T->>DB: 任务 PAUSED / 运行 SKIPPED
+    T->>N: 失败通知
+  end
+```
+
 ## 7. 接口设计
 
 ### 7.1 约定
@@ -1105,6 +1297,15 @@ flowchart LR
 | 会话 | POST | `/sessions/{id}/messages` | 发送消息（SSE） |
 | 会话 | POST | `/messages/{id}/feedback` | 反馈 |
 | 会话 | POST | `/sessions/{id}/share` | 生成只读分享 |
+| 定时任务 | GET/POST | `/scheduled-tasks` | 列表/创建 |
+| 定时任务 | GET/PUT/DELETE | `/scheduled-tasks/{id}` | 详情/修改/归档 |
+| 定时任务 | POST | `/scheduled-tasks/{id}/run` | 立即试跑 |
+| 定时任务 | POST | `/scheduled-tasks/{id}/pause` | 暂停 |
+| 定时任务 | POST | `/scheduled-tasks/{id}/resume` | 恢复 |
+| 定时任务 | GET | `/scheduled-tasks/{id}/runs` | 运行历史 |
+| 定时任务 | GET | `/scheduled-task-runs/{runId}` | 运行详情 |
+| 通知 | GET | `/notifications` | 站内通知 |
+| 通知 | POST | `/notifications/{id}/read` | 标记已读 |
 | 审计 | GET | `/audit/sql` | SQL 审计列表 |
 | 审计 | GET | `/audit/sql/{id}` | 审计详情 |
 | 审计 | GET | `/audit/events` | 操作审计 |
@@ -1199,6 +1400,9 @@ data: {"code":"PERMISSION_DENIED","message":"无该数据集权限","requestId":
 | 访问申请 | PENDING → APPROVED / REJECTED → ACTIVE → EXPIRED / REVOKED | 见 4.8.6 |
 | 坏例 | NEW → TRIAGED → FIXING → VERIFYING → CLOSED / REOPENED | 验证失败回到 FIXING |
 | 会话 | ACTIVE → ARCHIVED → DELETED | 删除软删除，保留审计 |
+| 定时任务 | DRAFT → ACTIVE ⇄ PAUSED；ACTIVE → ERROR → PAUSED；→ ARCHIVED | 见 4.10.2 |
+| 定时任务运行 | QUEUED → RUNNING → SUCCESS / FAILED / SKIPPED / CANCELED | 失败可重试；上一轮未结束则 SKIPPED |
+| 通知 | UNREAD → READ | 标记已读不影响任务 |
 | SQL 审计 | RUNNING → SUCCESS / FAILED / DENIED / TIMEOUT | 不可修改 SQL 内容 |
 | 智能体 | DRAFT → RUNNING → PAUSED | 现有；发布前做权限/评测检查 |
 
@@ -1215,6 +1419,9 @@ data: {"code":"PERMISSION_DENIED","message":"无该数据集权限","requestId":
 | 权限服务不可用 | 拒绝查询 | “权限校验失败，请稍后重试” |
 | 缓存不一致 | 以数据版本/权限版本为 Key；变更即失效 | 无感 |
 | 并发超限 | 队列 + 429 + `Retry-After` | 显示排队/稍后重试 |
+| 调度线程池满 | 任务排队；超过队列上限则本轮 `SKIPPED` 并通知 | 任务延迟，在线问答不受影响 |
+| 定时任务权限失效 | 任务 `PAUSED`，本轮 `SKIPPED`，不执行 SQL | 通知所有者重新授权 |
+| 定时任务重复触发 | `run_key` 唯一冲突，忽略重复 | 无感；审计只有一条 |
 | 文件解析失败 | 返回行号/列号/原因；保留原文件 | 可修正后重试 |
 
 ## 10. 非功能设计
@@ -1225,7 +1432,8 @@ data: {"code":"PERMISSION_DENIED","message":"无该数据集权限","requestId":
 - 查询：连接池按数据源隔离；默认 10 连接/源；慢查询记录；结果缓存 5 分钟（按 SQL 哈希 + 权限版本 + 数据版本）。
 - 会话：消息分页加载；历史摘要异步生成；SSE 首 Token ≤ 3s。
 - 大结果：服务端分页/游标；导出异步任务，完成后通知。
-- 并发：查询线程池与 ETL 线程池隔离，避免互相拖垮。
+- 并发：查询线程池、ETL 线程池、定时任务线程池隔离，避免互相拖垮。
+- 调度：到期任务 5 秒内被发现；任务执行不占用在线问答线程池；单任务超时默认 60s。
 
 ### 10.2 安全
 
@@ -1238,7 +1446,7 @@ data: {"code":"PERMISSION_DENIED","message":"无该数据集权限","requestId":
 ### 10.3 可观测
 
 - 每次问答生成 `trace_id`，贯穿意图、检索、生成、SQL、执行、答案。
-- 指标：QPS、P50/P95/P99、错误率、Token、缓存命中、慢查询、审计写入失败。
+- 指标：QPS、P50/P95/P99、错误率、Token、缓存命中、慢查询、审计写入失败、任务准时率/成功率、调度队列深度。
 - 日志：结构化 JSON；不记录密码、完整敏感数据；SQL 记录到审计而非普通日志。
 - 告警：数据源不可用、审计失败、错误率突增、成本超阈值。
 
@@ -1248,6 +1456,7 @@ data: {"code":"PERMISSION_DENIED","message":"无该数据集权限","requestId":
 - 上下文裁剪：只注入相关表/字段；限制历史与工具结果 Token。
 - 查询限制：行数/超时/并发；大查询走异步。
 - 配额：按用户/租户设置日/月 Token 与查询数；超限降级或拒绝。
+- 定时任务：语义任务不调用模型，只重编译/执行查询；结果快照与通知设保留期；按用户限制任务数。
 
 ## 11. 与现有代码基线的映射
 
@@ -1263,6 +1472,7 @@ data: {"code":"PERMISSION_DENIED","message":"无该数据集权限","requestId":
 | 查询 | 无业务数据查询 | 新增 SQL 网关、连接池、权限改写、审计 |
 | 元数据 | 无 | 新增数据源/数据集/表/字段/标注/语义/血缘模块 |
 | 审计 | 无 | 新增 SQL/操作审计、风险规则 |
+| 调度 | 无 | 新增定时任务调度器；与 ETL 共用基础设施但分队列/线程池 |
 | 前端 | 登录、概览、智能体管理 | 保留；新增问答、数据接入、元数据、语义、血缘、审计、权限、评测页面 |
 | 数据库 | H2 内存、`ddl-auto=update` | 开发保留 H2；生产切 MySQL/PostgreSQL；引入迁移脚本 |
 | 测试 | 认证/智能体/Harness 测试 | 保留；新增网关、权限、审计、语义编译、会话集成测试 |
@@ -1288,6 +1498,7 @@ data: {"code":"PERMISSION_DENIED","message":"无该数据集权限","requestId":
 | 多租户 | 单租户 + 预留字段 | 首期 SaaS | 降低隔离复杂度；保留演进空间 |
 | 模型 | 多模型网关 | 绑定单一厂商 | 成本/可用性/合规可切换 |
 | Agent | 单 Agent + 工具 | 多 Agent 自治 | 可控、便宜、易调试；复杂任务再演进 |
+| 定时任务执行 | 保存 query_spec/SQL 快照，运行时确定性重编译 | 每次让 Agent 重新生成 | 避免口径漂移、不可控成本、不可复现 |
 
 ## 13. 安全威胁模型（摘要）
 
@@ -1300,7 +1511,8 @@ data: {"code":"PERMISSION_DENIED","message":"无该数据集权限","requestId":
 | 凭据泄露 | 日志/错误/Prompt 泄露密码 | 加密；脱敏；密钥管理；日志审计 |
 | 跨租户 | 构造 tenant_id | 网关强制注入；所有查询带租户；测试覆盖 |
 | 审计篡改 | 删除/修改 SQL 记录 | 只插不改；哈希链；双人审批；归档 |
-| 成本攻击 | 高频/大查询 | 配额、限流、行数/超时、风险规则 |
+| 成本攻击 | 高频/大查询/高频定时任务 | 配额、限流、行数/超时、风险规则、任务并发上限 |
+| 定时任务滥用 | 越权任务、所有者失权后仍执行 | 每次运行重校验权限；失权即暂停；任务审计 |
 | 供应链 | 第三方依赖漏洞 | 依赖扫描、最小镜像、锁定版本 |
 
 ## 14. 交付边界
